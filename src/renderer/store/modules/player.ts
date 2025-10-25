@@ -9,11 +9,12 @@ import { getBilibiliAudioUrl } from '@/api/bilibili';
 import { getLikedList, getMusicLrc, getMusicUrl, getParsingMusicUrl, likeSong } from '@/api/music';
 import { useMusicHistory } from '@/hooks/MusicHistoryHook';
 import { audioService } from '@/services/audioService';
-import type { ILyric, ILyricText, SongResult } from '@/types/music';
+import type { ILyric, ILyricText, IWordData, SongResult } from '@/types/music';
 import { type Platform } from '@/types/music';
 import { getImgUrl } from '@/utils';
 import { hasPermission } from '@/utils/auth';
 import { getImageLinearBackground } from '@/utils/linearColor';
+import { parseLyrics as parseYrcLyrics } from '@/utils/yrcParser';
 
 import { useSettingsStore } from './settings';
 import { useUserStore } from './user';
@@ -207,30 +208,50 @@ export const getSongUrl = async (
   }
 };
 
-const parseTime = (timeString: string): number => {
-  const [minutes, seconds] = timeString.split(':');
-  return Number(minutes) * 60 + Number(seconds);
-};
-
-const parseLyricLine = (lyricLine: string): { time: number; text: string } => {
-  const TIME_REGEX = /(\d{2}:\d{2}(\.\d*)?)/g;
-  const LRC_REGEX = /(\[(\d{2}):(\d{2})(\.(\d*))?\])/g;
-  const timeText = lyricLine.match(TIME_REGEX)?.[0] || '';
-  const time = parseTime(timeText);
-  const text = lyricLine.replace(LRC_REGEX, '').trim();
-  return { time, text };
-};
-
+/**
+ * 使用新的yrcParser解析歌词
+ * @param lyricsString 歌词字符串
+ * @returns 解析后的歌词数据
+ */
 const parseLyrics = (lyricsString: string): { lyrics: ILyricText[]; times: number[] } => {
-  const lines = lyricsString.split('\n');
-  const lyrics: ILyricText[] = [];
-  const times: number[] = [];
-  lines.forEach((line) => {
-    const { time, text } = parseLyricLine(line);
-    times.push(time);
-    lyrics.push({ text, trText: '' });
-  });
-  return { lyrics, times };
+  if (!lyricsString || typeof lyricsString !== 'string') {
+    return { lyrics: [], times: [] };
+  }
+
+  try {
+    const parseResult = parseYrcLyrics(lyricsString);
+
+    if (!parseResult.success) {
+      console.error('歌词解析失败:', parseResult.error.message);
+      return { lyrics: [], times: [] };
+    }
+
+    const { lyrics: parsedLyrics } = parseResult.data;
+    const lyrics: ILyricText[] = [];
+    const times: number[] = [];
+
+    for (const line of parsedLyrics) {
+      // 检查是否有逐字歌词
+      const hasWords = line.words && line.words.length > 0;
+
+      lyrics.push({
+        text: line.fullText,
+        trText: '', // 翻译文本稍后处理
+        words: hasWords ? (line.words as IWordData[]) : undefined,
+        hasWordByWord: hasWords,
+        startTime: line.startTime,
+        duration: line.duration
+      });
+
+      // 时间数组使用秒为单位（与原有逻辑保持一致）
+      times.push(line.startTime / 1000);
+    }
+
+    return { lyrics, times };
+  } catch (error) {
+    console.error('解析歌词时发生错误:', error);
+    return { lyrics: [], times: [] };
+  }
 };
 
 export const loadLrc = async (id: string | number): Promise<ILyric> => {
@@ -238,35 +259,88 @@ export const loadLrc = async (id: string | number): Promise<ILyric> => {
     console.log('B站音频，无需加载歌词');
     return {
       lrcTimeArray: [],
-      lrcArray: []
+      lrcArray: [],
+      hasWordByWord: false
     };
   }
 
   try {
     const numericId = typeof id === 'string' ? parseInt(id, 10) : id;
     const { data } = await getMusicLrc(numericId);
-    const { lyrics, times } = parseLyrics(data.lrc.lyric);
-    const tlyric: Record<string, string> = {};
+    const { lyrics, times } = parseLyrics(data?.yrc?.lyric || data?.lrc?.lyric);
+
+    // 检查是否有逐字歌词
+    let hasWordByWord = false;
+    for (const lyric of lyrics) {
+      if (lyric.hasWordByWord) {
+        hasWordByWord = true;
+        break;
+      }
+    }
 
     if (data.tlyric && data.tlyric.lyric) {
-      const { lyrics: tLyrics, times: tTimes } = parseLyrics(data.tlyric.lyric);
-      tLyrics.forEach((lyric, index) => {
-        tlyric[tTimes[index].toString()] = lyric.text;
+      const { lyrics: tLyrics } = parseLyrics(data.tlyric.lyric);
+
+      // 按索引顺序一一对应翻译歌词
+      // 如果翻译歌词数量与原歌词数量相同，直接按索引匹配
+      // 否则尝试通过时间戳匹配
+      if (tLyrics.length === lyrics.length) {
+        // 数量相同，直接按索引对应
+        lyrics.forEach((item, index) => {
+          item.trText = item.text && tLyrics[index] ? tLyrics[index].text : '';
+        });
+      } else {
+        // 数量不同，构建时间戳映射并尝试匹配
+        const tLyricMap = new Map<number, string>();
+        tLyrics.forEach((lyric) => {
+          if (lyric.text && lyric.startTime !== undefined) {
+            // 使用 startTime（毫秒）转换为秒作为键
+            const timeInSeconds = lyric.startTime / 1000;
+            tLyricMap.set(timeInSeconds, lyric.text);
+          }
+        });
+
+        // 为每句歌词查找最接近的翻译
+        lyrics.forEach((item, index) => {
+          if (!item.text) {
+            item.trText = '';
+            return;
+          }
+
+          const currentTime = times[index];
+          let closestTime = -1;
+          let minDiff = 2.0; // 最大允许差异2秒
+
+          // 查找最接近的时间戳
+          for (const [tTime] of tLyricMap.entries()) {
+            const diff = Math.abs(tTime - currentTime);
+            if (diff < minDiff) {
+              minDiff = diff;
+              closestTime = tTime;
+            }
+          }
+
+          item.trText = closestTime !== -1 ? tLyricMap.get(closestTime) || '' : '';
+        });
+      }
+    } else {
+      // 没有翻译歌词，清空 trText
+      lyrics.forEach((item) => {
+        item.trText = '';
       });
     }
 
-    lyrics.forEach((item, index) => {
-      item.trText = item.text ? tlyric[times[index].toString()] || '' : '';
-    });
     return {
       lrcTimeArray: times,
-      lrcArray: lyrics
+      lrcArray: lyrics,
+      hasWordByWord
     };
   } catch (err) {
     console.error('Error loading lyrics:', err);
     return {
       lrcTimeArray: [],
-      lrcArray: []
+      lrcArray: [],
+      hasWordByWord: false
     };
   }
 };
@@ -275,7 +349,6 @@ const getSongDetail = async (playMusic: SongResult) => {
   // playMusic.playLoading 在 handlePlayMusic 中已设置，这里不再设置
 
   if (playMusic.source === 'bilibili') {
-    console.log('处理B站音频详情');
     try {
       // 如果需要获取URL
       if (!playMusic.playMusicUrl && playMusic.bilibiliData) {
@@ -413,14 +486,6 @@ const fetchSongs = async (playList: SongResult[], startIndex: number, endIndex: 
   }
 };
 
-const loadLrcAsync = async (playMusic: SongResult) => {
-  if (playMusic.lyric && playMusic.lyric.lrcTimeArray.length > 0) {
-    return;
-  }
-  const lyrics = await loadLrc(playMusic.id);
-  playMusic.lyric = lyrics;
-};
-
 // 定时关闭类型
 export enum SleepTimerType {
   NONE = 'none', // 没有定时
@@ -469,6 +534,13 @@ export const usePlayerStore = defineStore('player', () => {
 
   // 原始播放列表 - 保存切换到随机模式前的顺序
   const originalPlayList = ref<SongResult[]>(getLocalStorageItem('originalPlayList', []));
+
+  // 心动模式状态
+  const isIntelligenceMode = ref(getLocalStorageItem('isIntelligenceMode', false));
+  const intelligenceModeInfo = ref<{
+    playlistId: number;
+    seedSongId: number;
+  } | null>(getLocalStorageItem('intelligenceModeInfo', null));
 
   // 通用洗牌函数 - Fisher-Yates 算法
   const performShuffle = (list: SongResult[], currentSong?: SongResult): SongResult[] => {
@@ -632,18 +704,35 @@ export const usePlayerStore = defineStore('player', () => {
       currentSound.stop();
       currentSound.unload();
     }
-    // 先切换歌曲数据，更新播放状态
-    // 加载歌词
-    await loadLrcAsync(music);
+
+    // 保存原始歌曲数据
     const originalMusic = { ...music };
-    // 获取背景色
-    const { backgroundColor, primaryColor } =
-      music.backgroundColor && music.primaryColor
-        ? music
-        : await getImageLinearBackground(getImgUrl(music?.picUrl, '30y30'));
+
+    // 并行加载歌词和背景色，提高加载速度
+    const [lyrics, { backgroundColor, primaryColor }] = await Promise.all([
+      // 加载歌词
+      (async () => {
+        if (music.lyric && music.lyric.lrcTimeArray.length > 0) {
+          return music.lyric;
+        }
+        return await loadLrc(music.id);
+      })(),
+      // 获取背景色
+      (async () => {
+        if (music.backgroundColor && music.primaryColor) {
+          return { backgroundColor: music.backgroundColor, primaryColor: music.primaryColor };
+        }
+        return await getImageLinearBackground(getImgUrl(music?.picUrl, '30y30'));
+      })()
+    ]);
+
+    // 设置歌词和背景色
+    music.lyric = lyrics;
     music.backgroundColor = backgroundColor;
     music.primaryColor = primaryColor;
     music.playLoading = true; // 设置加载状态
+
+    // 更新 playMusic，此时歌词已完全加载
     playMusic.value = music;
 
     // 更新播放相关状态
@@ -678,6 +767,10 @@ export const usePlayerStore = defineStore('player', () => {
 
       // 获取歌曲详情，包括URL
       const updatedPlayMusic = await getSongDetail(originalMusic);
+
+      // 保留已加载的歌词数据，不要被 getSongDetail 的返回值覆盖
+      updatedPlayMusic.lyric = lyrics;
+
       playMusic.value = updatedPlayMusic;
       playMusicUrl.value = updatedPlayMusic.playMusicUrl as string;
       music.playMusicUrl = updatedPlayMusic.playMusicUrl as string;
@@ -872,7 +965,19 @@ export const usePlayerStore = defineStore('player', () => {
     musicFull.value = value;
   };
 
-  const setPlayList = (list: SongResult[], keepIndex: boolean = false) => {
+  const setPlayList = (
+    list: SongResult[],
+    keepIndex: boolean = false,
+    fromIntelligenceMode: boolean = false
+  ) => {
+    // 如果不是从心动模式调用，则清除心动模式状态
+    if (!fromIntelligenceMode && isIntelligenceMode.value) {
+      isIntelligenceMode.value = false;
+      intelligenceModeInfo.value = null;
+      localStorage.removeItem('isIntelligenceMode');
+      localStorage.removeItem('intelligenceModeInfo');
+    }
+
     if (list.length === 0) {
       playList.value = [];
       playListIndex.value = 0;
@@ -1253,10 +1358,21 @@ export const usePlayerStore = defineStore('player', () => {
   // 节流
   const prevPlay = useThrottleFn(_prevPlay, 500);
 
-  const togglePlayMode = () => {
-    const newMode = (playMode.value + 1) % 3;
+  const togglePlayMode = async () => {
+    const userStore = useUserStore();
+    const wasIntelligence = playMode.value === 3;
+    const newMode = (playMode.value + 1) % 4; // 扩展到4种模式
     const wasRandom = playMode.value === 2;
     const isRandom = newMode === 2;
+    const isIntelligence = newMode === 3;
+
+    // 如果要切换到心动模式，但用户未使用cookie登录，则跳过心动模式
+    if (isIntelligence && (!userStore.user || userStore.loginType !== 'cookie')) {
+      console.log('跳过心动模式：需要cookie登录');
+      playMode.value = 0; // 跳到顺序模式
+      localStorage.setItem('playMode', JSON.stringify(playMode.value));
+      return;
+    }
 
     playMode.value = newMode;
     localStorage.setItem('playMode', JSON.stringify(playMode.value));
@@ -1268,9 +1384,24 @@ export const usePlayerStore = defineStore('player', () => {
     }
 
     // 当从随机模式切换出去时，恢复原始顺序
-    if (!isRandom && wasRandom) {
+    if (!isRandom && wasRandom && !isIntelligence) {
       restoreOriginalOrder();
       console.log('切换出随机模式，恢复原始顺序');
+    }
+
+    // 当切换到心动模式时，触发心动模式播放
+    if (isIntelligence && !wasIntelligence) {
+      console.log('切换到心动模式');
+      await playIntelligenceMode();
+    }
+
+    // 当从心动模式切换出去时，清除心动模式状态
+    if (!isIntelligence && wasIntelligence) {
+      console.log('退出心动模式');
+      isIntelligenceMode.value = false;
+      intelligenceModeInfo.value = null;
+      localStorage.setItem('isIntelligenceMode', JSON.stringify(false));
+      localStorage.removeItem('intelligenceModeInfo');
     }
   };
 
@@ -1356,9 +1487,12 @@ export const usePlayerStore = defineStore('player', () => {
     const settingStore = useSettingsStore();
     const savedPlayList = getLocalStorageItem('playList', []);
     const savedPlayMusic = getLocalStorageItem<SongResult | null>('currentPlayMusic', null);
+    // 恢复心动模式状态
+    const savedIntelligenceMode = getLocalStorageItem('isIntelligenceMode', false);
 
     if (savedPlayList.length > 0) {
-      setPlayList(savedPlayList);
+      // 如果是心动模式，保持状态
+      setPlayList(savedPlayList, false, savedIntelligenceMode);
 
       // 重启后恢复随机播放状态
       if (playMode.value === 2) {
@@ -1441,6 +1575,7 @@ export const usePlayerStore = defineStore('player', () => {
       // 保存当前播放状态
       const shouldPlay = play.value;
       console.log('播放音频，当前播放状态:', shouldPlay ? '播放' : '暂停');
+      console.log('playMusic.value', playMusic.value.name, playMusic.value.id);
 
       // 检查是否有保存的进度
       let initialPosition = 0;
@@ -1658,6 +1793,86 @@ export const usePlayerStore = defineStore('player', () => {
     return newVolume;
   };
 
+  // 心动模式播放
+  const playIntelligenceMode = async () => {
+    const userStore = useUserStore();
+    const { t } = i18n.global;
+
+    // 检查是否使用cookie登录
+    if (!userStore.user || userStore.loginType !== 'cookie') {
+      message.warning(t('player.playBar.intelligenceMode.needCookieLogin'));
+      return;
+    }
+
+    try {
+      // 获取用户歌单列表
+      if (userStore.playList.length === 0) {
+        await userStore.initializePlaylist();
+      }
+
+      // 找到"我喜欢的音乐"歌单（通常是第一个歌单）
+      const favoritePlaylist = userStore.playList.find(
+        (pl: any) => pl.userId === userStore.user?.userId && pl.specialType === 5
+      );
+
+      if (!favoritePlaylist) {
+        message.warning(t('player.playBar.intelligenceMode.noFavoritePlaylist'));
+        return;
+      }
+
+      // 获取喜欢的歌曲列表
+      const likedListRes = await getLikedList(userStore.user.userId);
+      const likedIds = likedListRes.data?.ids || [];
+
+      if (likedIds.length === 0) {
+        message.warning(t('player.playBar.intelligenceMode.noLikedSongs'));
+        return;
+      }
+
+      // 随机选择一首歌曲
+      const randomSongId = likedIds[Math.floor(Math.random() * likedIds.length)];
+
+      // 调用心动模式API
+      const { getIntelligenceList } = await import('@/api/music');
+      const res = await getIntelligenceList({
+        id: randomSongId,
+        pid: favoritePlaylist.id
+      });
+
+      if (res.data?.data && res.data.data.length > 0) {
+        const intelligenceSongs = res.data.data.map((item: any) => ({
+          id: item.id,
+          name: item.songInfo.name,
+          picUrl: item.songInfo.al?.picUrl,
+          source: 'netease' as Platform,
+          song: item.songInfo,
+          ...item.songInfo,
+          playLoading: false
+        }));
+
+        // 设置心动模式状态
+        isIntelligenceMode.value = true;
+        intelligenceModeInfo.value = {
+          playlistId: favoritePlaylist.id,
+          seedSongId: randomSongId
+        };
+        playMode.value = 3; // 设置播放模式为心动模式
+        localStorage.setItem('isIntelligenceMode', JSON.stringify(true));
+        localStorage.setItem('intelligenceModeInfo', JSON.stringify(intelligenceModeInfo.value));
+        localStorage.setItem('playMode', JSON.stringify(playMode.value));
+
+        // 替换播放列表并开始播放
+        await setPlayList(intelligenceSongs, false, true);
+        await handlePlayMusic(intelligenceSongs[0], true);
+      } else {
+        message.error(t('player.playBar.intelligenceMode.failed'));
+      }
+    } catch (error) {
+      console.error('心动模式播放失败:', error);
+      message.error(t('player.playBar.intelligenceMode.error'));
+    }
+  };
+
   return {
     play,
     isPlay,
@@ -1723,6 +1938,11 @@ export const usePlayerStore = defineStore('player', () => {
     originalPlayList,
     shufflePlayList,
     restoreOriginalOrder,
-    preloadNextSongs
+    preloadNextSongs,
+
+    // 心动模式
+    playIntelligenceMode,
+    isIntelligenceMode,
+    intelligenceModeInfo
   };
 });

@@ -49,15 +49,34 @@
             @scroll="handleScroll"
           >
             <div class="lyrics-padding-top"></div>
+            <!-- 无时间戳歌词提示 -->
+            <div v-if="!supportAutoScroll" class="lyric-line no-scroll-tip">
+              <span>{{ t('player.lrc.noAutoScroll') }}</span>
+            </div>
             <div
               v-for="(item, index) in lrcArray"
               :key="index"
               :id="`lyric-line-${index}`"
               class="lyric-line"
-              :class="{ 'now-text': index === nowIndex, 'hover-text': item.text }"
-              @click="jumpToLyricTime(index)"
+              :class="{
+                'now-text': index === nowIndex,
+                'hover-text': item.text && item.startTime !== -1
+              }"
+              @click="item.startTime !== -1 ? setAudioTime(index) : null"
             >
-              <span :style="getLrcStyle(index)">{{ item.text }}</span>
+              <!-- 逐字歌词显示 -->
+              <div
+                v-if="item.hasWordByWord && item.words && item.words.length > 0"
+                class="word-by-word-lyric"
+              >
+                <template v-for="(word, wordIndex) in item.words" :key="wordIndex">
+                  <span class="lyric-word" :style="getWordStyle(index, wordIndex, word)">
+                    {{ word.text }} </span
+                  ><span class="lyric-word" v-if="word.space">&nbsp;</span></template
+                >
+              </div>
+              <!-- 普通歌词显示 -->
+              <span v-else :style="getLrcStyle(index)">{{ item.text }}</span>
               <div v-if="config.showTranslation && item.trText" class="translation">
                 {{ item.trText }}
               </div>
@@ -119,7 +138,22 @@
             <div class="lyrics-container" v-if="!config.hideLyrics" @click="showFullLyricScreen">
               <div v-if="lrcArray.length > 0" class="lyrics-wrapper">
                 <div v-for="(line, idx) in visibleLyrics" :key="idx" class="lyric-line">
-                  {{ line.text }}
+                  <!-- 逐字歌词显示 -->
+                  <div
+                    v-if="line.hasWordByWord && line.words && line.words.length > 0"
+                    class="word-by-word-lyric"
+                  >
+                    <template v-for="(word, wordIndex) in line.words" :key="wordIndex">
+                      <span
+                        class="lyric-word"
+                        :style="getWordStyle(line.originalIndex, wordIndex, word)"
+                      >
+                        {{ word.text }}</span
+                      ><span v-if="word.space">&nbsp;</span></template
+                    >
+                  </div>
+                  <!-- 普通歌词显示 -->
+                  <span v-else>{{ line.text }}</span>
                 </div>
               </div>
               <div v-else class="no-lyrics">
@@ -217,15 +251,34 @@
             @scroll="handleScroll"
           >
             <div class="lyrics-padding-top"></div>
+            <!-- 无时间戳歌词提示 -->
+            <div v-if="!supportAutoScroll" class="lyric-line no-scroll-tip">
+              <span>{{ t('player.lrc.noAutoScroll') }}</span>
+            </div>
             <div
               v-for="(item, index) in lrcArray"
               :key="index"
               :id="`landscape-lyric-line-${index}`"
               class="lyric-line"
-              :class="{ 'now-text': index === nowIndex, 'hover-text': item.text }"
-              @click="jumpToLyricTime(index)"
+              :class="{
+                'now-text': index === nowIndex,
+                'hover-text': item.text && item.startTime !== -1
+              }"
+              @click="item.startTime !== -1 ? setAudioTime(index) : null"
             >
-              <span :style="getLrcStyle(index)">{{ item.text }}</span>
+              <!-- 逐字歌词显示 -->
+              <div
+                v-if="item.hasWordByWord && item.words && item.words.length > 0"
+                class="word-by-word-lyric"
+              >
+                <template v-for="(word, wordIndex) in item.words" :key="wordIndex">
+                  <span class="lyric-word" :style="getWordStyle(index, wordIndex, word)">
+                    {{ word.text }} </span
+                  ><span class="lyric-word" v-if="word.space">&nbsp;</span></template
+                >
+              </div>
+              <!-- 普通歌词显示 -->
+              <span v-else :style="getLrcStyle(index)">{{ item.text }}</span>
               <div v-if="config.showTranslation && item.trText" class="translation">
                 {{ item.trText }}
               </div>
@@ -290,7 +343,7 @@
             <i class="ri-arrow-down-s-line"></i>
           </div>
           <div class="side-button" @click="togglePlayMode">
-            <i :class="playModeIcon"></i>
+            <i :class="[playModeIcon, { 'intelligence-active': playMode === 3 }]"></i>
           </div>
           <div class="main-button prev" @click="prevSong">
             <i class="ri-skip-back-fill"></i>
@@ -318,15 +371,18 @@ import { useI18n } from 'vue-i18n';
 import {
   allTime,
   artistList,
+  correctionTime,
   lrcArray,
   nowIndex,
   nowTime,
   playMusic,
+  setAudioTime,
   sound,
   textColors,
   useLyricProgress
 } from '@/hooks/MusicHook';
 import { useArtist } from '@/hooks/useArtist';
+import { usePlayMode } from '@/hooks/usePlayMode';
 import { usePlayerStore } from '@/store/modules/player';
 import { DEFAULT_LYRIC_CONFIG, LyricConfig } from '@/types/lyric';
 import { getImgUrl, secondToMinute } from '@/utils';
@@ -339,19 +395,9 @@ const playerStore = usePlayerStore();
 // 播放控制相关
 const play = computed(() => playerStore.isPlay);
 const playIcon = computed(() => (play.value ? 'ri-pause-fill' : 'ri-play-fill'));
-const playMode = computed(() => playerStore.playMode);
-const playModeIcon = computed(() => {
-  switch (playMode.value) {
-    case 0:
-      return 'ri-repeat-line';
-    case 1:
-      return 'ri-repeat-one-line';
-    case 2:
-      return 'ri-shuffle-line';
-    default:
-      return 'ri-repeat-line';
-  }
-});
+
+// 播放模式
+const { playMode, playModeIcon, playModeText, togglePlayMode: togglePlayModeBase } = usePlayMode();
 // 打开播放列表
 const showPlaylist = () => {
   playerStore.setPlayListDrawerVisible(true);
@@ -378,6 +424,7 @@ const isTouchScrolling = ref(false);
 const touchStartY = ref(0);
 const lastScrollTop = ref(0);
 const autoScrollTimer = ref<number | null>(null);
+const isSongChanging = ref(false);
 
 // 横屏检测相关
 const { width, height } = useWindowSize();
@@ -413,6 +460,10 @@ const showFullLyricScreen = () => {
   });
 };
 
+const supportAutoScroll = computed(() => {
+  return lrcArray.value.length > 0 && lrcArray.value[0].startTime !== -1;
+});
+
 // 关闭全屏歌词
 const closeFullLyrics = () => {
   showFullLyrics.value = false;
@@ -428,6 +479,11 @@ const scrollToCurrentLyric = (immediate = false, customScrollerRef?: HTMLElement
     const scrollerRef = customScrollerRef || lyricsScrollerRef.value;
     if (!scrollerRef) {
       console.log('歌词容器引用不存在');
+      return;
+    }
+
+    if (!supportAutoScroll.value) {
+      console.log('歌词不支持自动滚动');
       return;
     }
 
@@ -467,6 +523,9 @@ const scrollToCurrentLyric = (immediate = false, customScrollerRef?: HTMLElement
 // 监听歌词变化，自动滚动
 watch(nowIndex, (newIndex, oldIndex) => {
   console.log(`歌词索引变化: ${oldIndex} -> ${newIndex}`);
+
+  // 歌曲切换时不自动滚动
+  if (isSongChanging.value) return;
 
   // 在竖屏全屏歌词模式下滚动
   if (showFullLyrics.value) {
@@ -770,7 +829,11 @@ const visibleLyrics = computed(() => {
     startIdx = Math.max(0, endIdx - numLines + 1);
   }
 
-  return lrcArray.value.slice(startIdx, endIdx + 1);
+  // 返回带有原始索引的歌词数组
+  return lrcArray.value.slice(startIdx, endIdx + 1).map((item, idx) => ({
+    ...item,
+    originalIndex: startIdx + idx
+  }));
 });
 
 const props = defineProps({
@@ -891,12 +954,8 @@ const prevSong = () => {
 };
 
 const togglePlayMode = () => {
-  playerStore.togglePlayMode();
-  showBottomToast(
-    [t('player.playMode.sequence'), t('player.playMode.loop'), t('player.playMode.random')][
-      playMode.value
-    ]
-  );
+  togglePlayModeBase();
+  showBottomToast(playModeText.value);
 };
 
 const closeMusicFull = () => {
@@ -912,6 +971,38 @@ watch(
     setTextColors(newBackground);
   },
   { immediate: true }
+);
+
+// 添加对 playMusic.id 的监听，歌曲切换时滚动到顶部
+watch(
+  () => playMusic.value.id,
+  (newId, oldId) => {
+    // 只在歌曲真正切换时滚动到顶部
+    if (newId !== oldId && newId) {
+      isSongChanging.value = true;
+      // 延迟滚动，确保 nowIndex 已重置
+      setTimeout(() => {
+        // 在全屏歌词模式下滚动到顶部
+        if (showFullLyrics.value && lyricsScrollerRef.value) {
+          lyricsScrollerRef.value.scrollTo({
+            top: 0,
+            behavior: 'smooth'
+          });
+        }
+        // 在横屏模式下滚动到顶部
+        else if (isLandscape.value && landscapeLyricsRef.value) {
+          landscapeLyricsRef.value.scrollTo({
+            top: 0,
+            behavior: 'smooth'
+          });
+        }
+        // 延迟恢复自动滚动，等待歌词数据更新
+        setTimeout(() => {
+          isSongChanging.value = false;
+        }, 300);
+      }, 100);
+    }
+  }
 );
 
 // 加载保存的配置
@@ -958,42 +1049,6 @@ watch(isVisible, (newVal) => {
   }
 });
 
-// 通过点击跳转到歌词对应时间点
-const jumpToLyricTime = (index: number) => {
-  if (lrcArray.value[index] && 'time' in lrcArray.value[index] && sound.value) {
-    // 使用类型断言确保time属性存在
-    const lrcItem = lrcArray.value[index] as { time: number; text: string; trText?: string };
-    const time = lrcItem.time / 1000;
-
-    // 更新播放位置
-    sound.value.seek(time);
-    nowTime.value = time;
-
-    // 显示反馈动画 - 处理两种模式下的歌词行
-    const normalEl = document.getElementById(`lyric-line-${index}`);
-    const landscapeEl = document.getElementById(`landscape-lyric-line-${index}`);
-
-    // 根据当前模式获取正确的元素并添加动画效果
-    const activeEl = isLandscape.value ? landscapeEl : normalEl;
-
-    if (activeEl) {
-      activeEl.classList.add('clicked');
-      setTimeout(() => {
-        activeEl.classList.remove('clicked');
-      }, 300);
-    }
-
-    // 如果歌词索引没有变化（例如点击当前行），手动触发滚动
-    if (nowIndex.value === index) {
-      if (isLandscape.value && !showFullLyrics.value) {
-        scrollToCurrentLyric(true, landscapeLyricsRef.value);
-      } else if (showFullLyrics.value) {
-        scrollToCurrentLyric(true);
-      }
-    }
-  }
-};
-
 // 添加getLrcStyle函数
 const { getLrcStyle: originalLrcStyle } = useLyricProgress();
 
@@ -1019,6 +1074,57 @@ const getLrcStyle = (index: number) => {
   return {
     color: colors.primary
   };
+};
+
+// 逐字歌词样式函数
+const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
+  const colors = textColors.value || getTextColors();
+  // 如果不是当前行，返回普通样式
+  if (lineIndex !== nowIndex.value) {
+    return {
+      color: colors.primary,
+      transition: 'color 0.3s ease',
+      // 重置背景相关属性
+      backgroundImage: 'none',
+      WebkitTextFillColor: 'initial'
+    };
+  }
+
+  // 当前行的逐字效果，应用歌词矫正时间
+  const currentTime = (nowTime.value + correctionTime.value) * 1000; // 转换为毫秒，确保与word时间单位一致
+
+  // 直接使用绝对时间比较
+  const wordStartTime = word.startTime; // 单词开始的绝对时间（毫秒）
+  const wordEndTime = word.startTime + word.duration;
+
+  if (currentTime >= wordStartTime && currentTime < wordEndTime) {
+    // 当前正在播放的单词 - 使用渐变进度效果
+    const progress = Math.min((currentTime - wordStartTime) / word.duration, 1);
+    const progressPercent = Math.round(progress * 100);
+
+    return {
+      backgroundImage: `linear-gradient(to right, ${colors.active} 0%, ${colors.active} ${progressPercent}%, ${colors.primary} ${progressPercent}%, ${colors.primary} 100%)`,
+      backgroundClip: 'text',
+      WebkitBackgroundClip: 'text',
+      WebkitTextFillColor: 'transparent',
+      textShadow: `0 0 8px ${colors.active}40`,
+      transition: 'all 0.1s ease'
+    };
+  } else if (currentTime >= wordEndTime) {
+    // 已经播放过的单词 - 纯色显示
+    return {
+      color: colors.active,
+      WebkitTextFillColor: 'initial',
+      transition: 'none'
+    };
+  } else {
+    // 还未播放的单词 - 普通状态
+    return {
+      color: colors.primary,
+      WebkitTextFillColor: 'initial',
+      transition: 'none'
+    };
+  }
 };
 </script>
 
@@ -1406,6 +1512,10 @@ const getLrcStyle = (index: number) => {
           i {
             @apply text-2xl;
             color: var(--text-color-primary);
+
+            &.intelligence-active {
+              @apply text-green-500;
+            }
           }
 
           &:hover {
@@ -1574,12 +1684,22 @@ const getLrcStyle = (index: number) => {
 
 // 通用歌词样式
 .lyric-line {
-  @apply cursor-pointer transition-all duration-300;
+  @apply cursor-pointer transition-all duration-300 font-medium;
   font-weight: 500;
   letter-spacing: var(--lyric-letter-spacing, 0);
   line-height: var(--lyric-line-height, 1.6);
   color: var(--text-color-primary);
   opacity: 0.8;
+
+  &.no-scroll-tip {
+    @apply text-base opacity-60 cursor-default py-2;
+    color: var(--text-color-primary);
+    font-weight: normal;
+
+    span {
+      padding-right: 0;
+    }
+  }
 
   span {
     background-clip: text !important;
@@ -1587,7 +1707,7 @@ const getLrcStyle = (index: number) => {
   }
 
   &.now-text {
-    @apply font-bold py-4;
+    @apply font-medium py-4;
     color: var(--text-color-active);
     opacity: 1;
   }
@@ -1598,6 +1718,26 @@ const getLrcStyle = (index: number) => {
 
   .translation {
     @apply font-normal opacity-70 mt-1 text-base;
+  }
+
+  // 逐字歌词样式
+  .word-by-word-lyric {
+    @apply flex flex-wrap justify-center;
+
+    .lyric-word {
+      @apply inline-block;
+      font-weight: inherit;
+      font-size: inherit;
+      letter-spacing: inherit;
+      line-height: inherit;
+      cursor: inherit;
+      position: relative;
+      padding-right: 0 !important;
+
+      &:hover {
+        background-color: rgba(255, 255, 255, 0.1);
+      }
+    }
   }
 }
 
@@ -1727,6 +1867,10 @@ const getLrcStyle = (index: number) => {
         }
       }
     }
+
+    .word-by-word-lyric {
+      @apply justify-start;
+    }
   }
 
   .unified-controls {
@@ -1763,6 +1907,10 @@ const getLrcStyle = (index: number) => {
             @apply text-sm opacity-60 mt-1;
           }
         }
+      }
+
+      .lyric-word {
+        @apply px-[2px];
       }
 
       .no-lyrics {

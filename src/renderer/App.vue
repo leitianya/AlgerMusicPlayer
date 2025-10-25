@@ -19,11 +19,11 @@ import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
 import TrafficWarningDrawer from '@/components/TrafficWarningDrawer.vue';
-import homeRouter from '@/router/home';
-import { useMenuStore } from '@/store/modules/menu';
 import { usePlayerStore } from '@/store/modules/player';
 import { useSettingsStore } from '@/store/modules/settings';
+import { useUserStore } from '@/store/modules/user';
 import { isElectron, isLyricWindow } from '@/utils';
+import { checkLoginStatus } from '@/utils/auth';
 
 import { initAudioListeners, initMusicHook } from './hooks/MusicHook';
 import { audioService } from './services/audioService';
@@ -32,8 +32,8 @@ import { useAppShortcuts } from './utils/appShortcuts';
 
 const { locale } = useI18n();
 const settingsStore = useSettingsStore();
-const menuStore = useMenuStore();
 const playerStore = usePlayerStore();
+const userStore = useUserStore();
 const router = useRouter();
 
 // 监听语言变化
@@ -75,8 +75,16 @@ if (!isLyricWindow.value) {
   settingsStore.initializeSettings();
   settingsStore.initializeTheme();
   settingsStore.initializeSystemFonts();
-  if (isMobile.value) {
-    menuStore.setMenus(homeRouter.filter((item) => item.meta.isMobile));
+
+  // 初始化登录状态 - 从 localStorage 恢复用户信息和登录类型
+  const loginInfo = checkLoginStatus();
+  if (loginInfo.isLoggedIn) {
+    if (loginInfo.user && !userStore.user) {
+      userStore.setUser(loginInfo.user);
+    }
+    if (loginInfo.loginType && !userStore.loginType) {
+      userStore.setLoginType(loginInfo.loginType);
+    }
   }
 }
 

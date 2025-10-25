@@ -20,7 +20,10 @@
       <div class="controls-section">
         <div class="left-controls">
           <button class="control-btn small-btn" @click="togglePlayMode">
-            <i class="iconfont" :class="playModeIcon"></i>
+            <i
+              class="iconfont"
+              :class="[playModeIcon, { 'intelligence-active': playMode === 3 }]"
+            ></i>
           </button>
         </div>
 
@@ -73,9 +76,9 @@
 import { computed, onMounted, ref, watch } from 'vue';
 
 import { allTime, nowTime, playMusic } from '@/hooks/MusicHook';
+import { usePlayMode } from '@/hooks/usePlayMode';
 import { audioService } from '@/services/audioService';
 import { usePlayerStore } from '@/store/modules/player';
-import { useSettingsStore } from '@/store/modules/settings';
 import { secondToMinute } from '@/utils';
 
 const props = withDefaults(
@@ -88,31 +91,13 @@ const props = withDefaults(
 );
 
 const playerStore = usePlayerStore();
-const settingsStore = useSettingsStore();
 const playBarRef = ref<HTMLElement | null>(null);
 
 // 播放状态
 const play = computed(() => playerStore.isPlay);
 
 // 播放模式
-const playMode = computed(() => playerStore.playMode);
-const playModeIcon = computed(() => {
-  switch (playMode.value) {
-    case 0:
-      return 'ri-repeat-2-line';
-    case 1:
-      return 'ri-repeat-one-line';
-    case 2:
-      return 'ri-shuffle-line';
-    default:
-      return 'ri-repeat-2-line';
-  }
-});
-
-// 切换播放模式
-const togglePlayMode = () => {
-  playerStore.togglePlayMode();
-};
+const { playMode, playModeIcon, togglePlayMode } = usePlayMode();
 
 // 音量控制
 const audioVolume = ref(
@@ -183,7 +168,7 @@ const openPlayListDrawer = () => {
 };
 
 // 深色模式
-const isDarkMode = computed(() => settingsStore.theme === 'dark' || props.isDark);
+const isDarkMode = computed(() => props.isDark);
 
 // 主题颜色应用函数
 const applyThemeColor = (colorValue: string) => {
@@ -528,5 +513,9 @@ onMounted(() => {
 .like-active {
   color: var(--fill-color);
   text-shadow: 0 0 8px var(--fill-color-transparent);
+}
+
+.intelligence-active {
+  @apply text-green-500;
 }
 </style>

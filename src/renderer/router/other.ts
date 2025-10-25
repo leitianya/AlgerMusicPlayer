@@ -86,6 +86,28 @@ const otherRouter = [
       back: true
     },
     component: () => import('@/views/playlist/ImportPlaylist.vue')
+  },
+  {
+    path: '/heatmap',
+    name: 'heatmap',
+    meta: {
+      title: '播放热力图',
+      keepAlive: true,
+      showInMenu: false,
+      back: true
+    },
+    component: () => import('@/views/heatmap/index.vue')
+  },
+  {
+    path: '/history-recommend',
+    name: 'historyRecommend',
+    meta: {
+      title: '历史日推',
+      keepAlive: true,
+      showInMenu: false,
+      back: true
+    },
+    component: () => import('@/views/music/HistoryRecommend.vue')
   }
 ];
 export default otherRouter;

@@ -111,15 +111,34 @@
                 </span>
               </div>
             </div>
+            <!-- 无时间戳歌词提示 -->
+            <div v-if="!supportAutoScroll" class="music-lrc-text no-scroll-tip">
+              <span>{{ t('player.lrc.noAutoScroll') }}</span>
+            </div>
             <div
               v-for="(item, index) in lrcArray"
               :id="`music-lrc-text-${index}`"
               :key="index"
               class="music-lrc-text"
-              :class="{ 'now-text': index === nowIndex, 'hover-text': item.text }"
-              @click="setAudioTime(index)"
+              :class="{
+                'now-text': index === nowIndex,
+                'hover-text': item.text && item.startTime !== -1
+              }"
+              @click="item.startTime !== -1 ? setAudioTime(index) : null"
             >
-              <span :style="getLrcStyle(index)">{{ item.text }}</span>
+              <!-- 逐字歌词显示 -->
+              <div
+                v-if="item.hasWordByWord && item.words && item.words.length > 0"
+                class="word-by-word-lyric"
+              >
+                <template v-for="(word, wordIndex) in item.words" :key="wordIndex">
+                  <span class="lyric-word" :style="getWordStyle(index, wordIndex, word)">
+                    {{ word.text }} </span
+                  ><span class="lyric-word" v-if="word.space">&nbsp;</span></template
+                >
+              </div>
+              <!-- 普通歌词显示 -->
+              <span v-else :style="getLrcStyle(index)">{{ item.text }}</span>
               <div v-show="config.showTranslation" class="music-lrc-text-tr">
                 {{ item.trText }}
               </div>
@@ -144,7 +163,7 @@
 
 <script setup lang="ts">
 import { useDebounceFn } from '@vueuse/core';
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import Cover3D from '@/components/cover/Cover3D.vue';
@@ -157,6 +176,7 @@ import {
   correctionTime,
   lrcArray,
   nowIndex,
+  nowTime,
   playMusic,
   setAudioTime,
   textColors,
@@ -179,6 +199,7 @@ const animationFrame = ref<number | null>(null);
 const isDark = ref(false);
 const showStickyHeader = ref(false);
 const lyricSettingsRef = ref<InstanceType<typeof LyricSettings>>();
+const isSongChanging = ref(false);
 
 const config = ref<LyricConfig>({ ...DEFAULT_LYRIC_CONFIG });
 
@@ -203,6 +224,10 @@ watch(
   },
   { deep: true }
 );
+
+const supportAutoScroll = computed(() => {
+  return lrcArray.value.length > 0 && lrcArray.value[0].startTime !== -1;
+});
 
 const props = defineProps({
   modelValue: {
@@ -229,7 +254,7 @@ const isVisible = computed({
 
 // 歌词滚动方法
 const lrcScroll = (behavior: ScrollBehavior = 'smooth', forceTop: boolean = false) => {
-  if (!isVisible.value || !lrcSider.value) return;
+  if (!isVisible.value || !lrcSider.value || !supportAutoScroll.value) return;
 
   if (forceTop) {
     lrcSider.value.scrollTo({
@@ -274,6 +299,8 @@ const mouseLeaveLayout = () => {
 };
 
 watch(nowIndex, () => {
+  // 歌曲切换时不自动滚动
+  if (isSongChanging.value) return;
   debouncedLrcScroll();
 });
 
@@ -337,31 +364,87 @@ watch(
   { immediate: true }
 );
 
-// 修改 useLyricProgress 的使用方式
 const { getLrcStyle: originalLrcStyle } = useLyricProgress();
 
-// 修改 getLrcStyle 函数
 const getLrcStyle = (index: number) => {
-  const colors = textColors.value || getTextColors;
+  const colors = textColors.value || getTextColors();
   const originalStyle = originalLrcStyle(index);
 
   if (index === nowIndex.value) {
-    // 当前播放的歌词，使用渐变效果
-    return {
-      ...originalStyle,
-      backgroundImage: originalStyle.backgroundImage
-        ?.replace(/#ffffff/g, colors.active)
-        .replace(/#ffffff8a/g, `${colors.primary}`),
-      backgroundClip: 'text',
-      WebkitBackgroundClip: 'text',
-      color: 'transparent'
-    };
+    // 当前播放的歌词
+    if (originalStyle.backgroundImage) {
+      // 有渐变进度时，使用渐变效果
+      return {
+        ...originalStyle,
+        backgroundImage: originalStyle.backgroundImage
+          .replace(/#ffffff/g, colors.active)
+          .replace(/#ffffff8a/g, `${colors.primary}`),
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        color: 'transparent'
+      };
+    } else {
+      return {
+        color: colors.primary
+      };
+    }
   }
 
   // 非当前播放的歌词，使用普通颜色
   return {
     color: colors.primary
   };
+};
+
+// 逐字歌词样式函数
+const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
+  const colors = textColors.value || getTextColors();
+  // 如果不是当前行，返回普通样式
+  if (lineIndex !== nowIndex.value) {
+    return {
+      color: colors.primary,
+      transition: 'color 0.3s ease',
+      // 重置背景相关属性
+      backgroundImage: 'none',
+      WebkitTextFillColor: 'initial'
+    };
+  }
+
+  // 当前行的逐字效果，应用歌词矫正时间
+  const currentTime = (nowTime.value + correctionTime.value) * 1000; // 转换为毫秒，确保与word时间单位一致
+
+  // 直接使用绝对时间比较
+  const wordStartTime = word.startTime; // 单词开始的绝对时间（毫秒）
+  const wordEndTime = word.startTime + word.duration;
+
+  if (currentTime >= wordStartTime && currentTime < wordEndTime) {
+    // 当前正在播放的单词 - 使用渐变进度效果
+    const progress = Math.min((currentTime - wordStartTime) / word.duration, 1);
+    const progressPercent = Math.round(progress * 100);
+
+    return {
+      backgroundImage: `linear-gradient(to right, ${colors.active} 0%, ${colors.active} ${progressPercent}%, ${colors.primary} ${progressPercent}%, ${colors.primary} 100%)`,
+      backgroundClip: 'text',
+      WebkitBackgroundClip: 'text',
+      WebkitTextFillColor: 'transparent',
+      textShadow: `0 0 8px ${colors.active}40`,
+      transition: 'all 0.1s ease'
+    };
+  } else if (currentTime >= wordEndTime) {
+    // 已经播放过的单词 - 纯色显示
+    return {
+      color: colors.active,
+      WebkitTextFillColor: 'initial',
+      transition: 'none'
+    };
+  } else {
+    // 还未播放的单词 - 普通状态
+    return {
+      color: colors.primary,
+      WebkitTextFillColor: 'initial',
+      transition: 'none'
+    };
+  }
 };
 
 // 组件卸载时清理动画
@@ -502,12 +585,24 @@ onMounted(() => {
   }
 });
 
-// 添加对 playMusic 的监听
-watch(playMusic, () => {
-  nextTick(() => {
-    lrcScroll('instant', true);
-  });
-});
+// 添加对 playMusic.id 的监听，歌曲切换时滚动到顶部
+watch(
+  () => playMusic.value.id,
+  (newId, oldId) => {
+    // 只在歌曲真正切换时滚动到顶部
+    if (newId !== oldId && newId) {
+      isSongChanging.value = true;
+      // 延迟滚动，确保 nowIndex 已重置
+      setTimeout(() => {
+        lrcScroll('instant', true);
+        // 延迟恢复自动滚动，等待歌词数据更新
+        setTimeout(() => {
+          isSongChanging.value = false;
+        }, 300);
+      }, 100);
+    }
+  }
+);
 
 defineExpose({
   lrcScroll,
@@ -621,6 +716,9 @@ defineExpose({
 
   .music-lrc-container {
     padding-top: 30vh;
+    .music-lrc-text:last-child {
+      margin-bottom: 200px;
+    }
   }
 
   .music-lrc {
@@ -659,6 +757,20 @@ defineExpose({
       letter-spacing: var(--lyric-letter-spacing, 0) !important;
       line-height: var(--lyric-line-height, 2) !important;
 
+      &.no-scroll-tip {
+        @apply text-base opacity-60 cursor-default py-2;
+        color: var(--text-color-primary);
+        font-weight: normal;
+
+        span {
+          padding-right: 0;
+        }
+
+        &:hover {
+          background-color: transparent;
+        }
+      }
+
       span {
         background-clip: text !important;
         -webkit-background-clip: text !important;
@@ -669,6 +781,26 @@ defineExpose({
         @apply font-normal;
         opacity: 0.7;
         color: var(--text-color-primary);
+      }
+
+      // 逐字歌词样式
+      .word-by-word-lyric {
+        @apply flex flex-wrap;
+
+        .lyric-word {
+          @apply inline-block;
+          padding-right: 0;
+          font-weight: inherit;
+          font-size: inherit;
+          letter-spacing: inherit;
+          line-height: inherit;
+          cursor: inherit;
+          position: relative;
+
+          &:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+          }
+        }
       }
     }
 

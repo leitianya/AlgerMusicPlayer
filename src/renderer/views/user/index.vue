@@ -32,41 +32,50 @@
         </div>
         <div class="uesr-signature">{{ userDetail.profile.signature }}</div>
         <div class="play-list" :class="setAnimationClass('animate__fadeInLeft')">
-          <div class="title">
-            <div>{{ t('user.playlist.created') }}</div>
-            <div class="import-btn" @click="goToImportPlaylist" v-if="isElectron">
-              {{ t('comp.playlist.import.button') }}
-            </div>
+          <div class="tab-container">
+            <n-tabs v-model:value="currentTab" type="segment" animated>
+              <n-tab v-for="tab in tabs" :key="tab.key" :name="tab.key" :tab="t(tab.label)">
+              </n-tab>
+            </n-tabs>
           </div>
           <n-scrollbar>
-            <div
-              v-for="(item, index) in playList"
-              :key="index"
-              class="play-list-item"
-              @click="openPlaylist(item)"
-            >
-              <n-image
-                :src="getImgUrl(item.coverImgUrl, '50y50')"
-                class="play-list-item-img"
-                lazy
-                preview-disabled
-              />
-              <div class="play-list-item-info">
-                <div class="play-list-item-name">
-                  <n-ellipsis :line-clamp="1">{{ item.name }}</n-ellipsis>
-                  <div v-if="item.creator.userId === user.userId" class="playlist-creator-tag">
-                    {{ t('user.playlist.mine') }}
+            <div class="mt-4">
+              <button
+                class="play-list-item"
+                @click="goToImportPlaylist"
+                v-if="isElectron && currentTab === 'created'"
+              >
+                <div class="play-list-item-img"><i class="icon iconfont ri-add-line"></i></div>
+                <div class="play-list-item-info">
+                  <div class="play-list-item-name">
+                    {{ t('comp.playlist.import.button') }}
                   </div>
                 </div>
-                <div class="play-list-item-count">
-                  {{ t('user.playlist.trackCount', { count: item.trackCount }) }}，{{
-                    t('user.playlist.playCount', { count: item.playCount })
-                  }}
+              </button>
+              <div
+                v-for="(item, index) in currentList"
+                :key="index"
+                class="play-list-item"
+                @click="handleItemClick(item)"
+              >
+                <n-image
+                  :src="getImgUrl(getCoverUrl(item), '50y50')"
+                  class="play-list-item-img"
+                  lazy
+                  preview-disabled
+                />
+                <div class="play-list-item-info">
+                  <div class="play-list-item-name">
+                    <n-ellipsis :line-clamp="1">{{ item.name }}</n-ellipsis>
+                  </div>
+                  <div class="play-list-item-count">
+                    {{ getItemDescription(item) }}
+                  </div>
                 </div>
               </div>
+              <div class="pb-20"></div>
+              <play-bottom />
             </div>
-            <div class="pb-20"></div>
-            <play-bottom />
           </n-scrollbar>
         </div>
       </div>
@@ -114,7 +123,7 @@ import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
 import { getListDetail } from '@/api/list';
-import { getUserDetail, getUserPlaylist, getUserRecord } from '@/api/user';
+import { getUserAlbumSublist, getUserDetail, getUserPlaylist, getUserRecord } from '@/api/user';
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
 import PlayBottom from '@/components/common/PlayBottom.vue';
 import SongItem from '@/components/common/SongItem.vue';
@@ -135,7 +144,6 @@ const userStore = useUserStore();
 const playerStore = usePlayerStore();
 const router = useRouter();
 const userDetail = ref<IUserDetail>();
-const playList = ref<any[]>([]);
 const recordList = ref();
 const infoLoading = ref(false);
 const mounted = ref(true);
@@ -143,7 +151,62 @@ const list = ref<Playlist>();
 const listLoading = ref(false);
 const message = useMessage();
 
+// Tab 相关
+const tabs = [
+  { key: 'created', label: 'user.tabs.created' },
+  { key: 'favorite', label: 'user.tabs.favorite' },
+  { key: 'album', label: 'user.tabs.album' }
+];
+const currentTab = ref('created');
+
 const user = computed(() => userStore.user);
+
+// 创建的歌单（当前用户创建的）
+const createdPlaylists = computed(() => {
+  if (!user.value) return [];
+  return userStore.playList.filter((item) => item.creator?.userId === user.value!.userId);
+});
+
+// 收藏的歌单（当前用户收藏的）
+const favoritePlaylists = computed(() => {
+  if (!user.value) return [];
+  return userStore.playList.filter((item) => item.creator?.userId !== user.value!.userId);
+});
+
+// 当前显示的列表（根据 tab 切换）
+const currentList = computed(() => {
+  if (currentTab.value === 'album') {
+    return userStore.albumList;
+  }
+  return currentTab.value === 'created' ? createdPlaylists.value : favoritePlaylists.value;
+});
+
+// 获取封面图片 URL
+const getCoverUrl = (item: any) => {
+  return item.coverImgUrl || item.picUrl || '';
+};
+
+// 获取列表项描述
+const getItemDescription = (item: any) => {
+  if (currentTab.value === 'album') {
+    // 专辑：显示艺术家和歌曲数量
+    const artist = item.artist?.name || '';
+    const size = item.size ? ` · ${item.size}首` : '';
+    return `${artist}${size}`;
+  } else {
+    // 歌单：显示曲目数和播放量
+    return `${t('user.playlist.trackCount', { count: item.trackCount })}，${t('user.playlist.playCount', { count: item.playCount })}`;
+  }
+};
+
+// 统一处理列表项点击
+const handleItemClick = (item: any) => {
+  if (currentTab.value === 'album') {
+    openAlbum(item);
+  } else {
+    openPlaylist(item);
+  }
+};
 
 const goToImportPlaylist = () => {
   router.push('/playlist/import');
@@ -155,26 +218,16 @@ onBeforeUnmount(() => {
 
 // 检查登录状态
 const checkLoginStatus = () => {
-  // 优先使用 userStore 中的状态
+  // userStore 的状态已经在 App.vue 中全局初始化，这里只需要检查
   if (userStore.user && userStore.loginType) {
     return true;
   }
 
-  // 如果 store 中没有数据，尝试从 localStorage 恢复
+  // 如果还是没有登录信息，跳转到登录页
   const loginInfo = checkAuthStatus();
-
   if (!loginInfo.isLoggedIn) {
     !isMobile.value && router.push('/login');
     return false;
-  }
-
-  // 恢复用户数据和登录类型到 store
-  if (!userStore.user && loginInfo.user) {
-    userStore.setUser(loginInfo.user);
-  }
-
-  if (!userStore.loginType && loginInfo.loginType) {
-    userStore.setLoginType(loginInfo.loginType);
   }
 
   return true;
@@ -199,22 +252,28 @@ const loadData = async () => {
       return;
     }
 
-    // 使用 Promise.all 并行请求提高效率
-    const [userDetailRes, playlistRes, recordRes] = await Promise.all([
-      getUserDetail(user.value.userId),
-      getUserPlaylist(user.value.userId),
-      getUserRecord(user.value.userId)
-    ]);
+    // 如果 store 中还没有数据，则加载
+    const promises = [getUserDetail(user.value.userId), getUserRecord(user.value.userId)];
+
+    if (userStore.playList.length === 0) {
+      promises.push(getUserPlaylist(user.value.userId));
+    }
+
+    const results = await Promise.all(promises);
 
     if (!mounted.value) return;
 
-    userDetail.value = userDetailRes.data;
-    playList.value = playlistRes.data.playlist;
-    recordList.value = recordRes.data.allData.map((item: any) => ({
+    userDetail.value = results[0].data;
+    recordList.value = results[1].data.allData.map((item: any) => ({
       ...item,
       ...item.song,
       picUrl: item.song.al.picUrl
     }));
+
+    // 如果加载了歌单，更新 store
+    if (results.length > 2 && results[2].data?.playlist) {
+      userStore.playList = results[2].data.playlist;
+    }
   } catch (error: any) {
     console.error('加载用户页面失败:', error);
     if (error.response?.status === 401) {
@@ -224,6 +283,29 @@ const loadData = async () => {
       // 添加更多错误处理和重试逻辑
       message.error(t('user.message.loadFailed'));
     }
+  } finally {
+    if (mounted.value) {
+      infoLoading.value = false;
+    }
+  }
+};
+
+// 加载专辑列表
+const loadAlbumList = async () => {
+  // 如果 store 中已经有数据，直接返回
+  if (userStore.albumList.length > 0) {
+    return;
+  }
+
+  try {
+    infoLoading.value = true;
+    const res = await getUserAlbumSublist({ limit: 100, offset: 0 });
+    if (!mounted.value) return;
+    // 更新 store 中的专辑列表
+    userStore.albumList = res.data.data || [];
+  } catch (error: any) {
+    console.error('加载专辑列表失败:', error);
+    message.error('加载专辑列表失败');
   } finally {
     if (mounted.value) {
       infoLoading.value = false;
@@ -255,6 +337,18 @@ watch(
   }
 );
 
+// 监听 tab 切换
+watch(currentTab, async (newTab) => {
+  if (newTab === 'album') {
+    // 刷新收藏专辑列表到 store
+    await userStore.initializeCollectedAlbums();
+    // 如果 store 中列表为空，则加载
+    if (userStore.albumList.length === 0) {
+      loadAlbumList();
+    }
+  }
+});
+
 // 页面挂载时检查登录状态
 onMounted(() => {
   checkLoginStatus() && loadData();
@@ -277,6 +371,38 @@ const openPlaylist = (item: any) => {
       canRemove: true // 保留可移除功能
     });
   });
+};
+
+// 打开专辑
+const openAlbum = async (item: any) => {
+  // 使用专辑 API 获取专辑详情
+  try {
+    listLoading.value = true;
+    const { getAlbumDetail } = await import('@/api/music');
+    const res = await getAlbumDetail(item.id.toString());
+
+    if (res.data?.album && res.data?.songs) {
+      const albumData = res.data.album;
+      const songs = res.data.songs.map((item) => ({
+        ...item,
+        picUrl: albumData.picUrl
+      }));
+
+      navigateToMusicList(router, {
+        id: item.id,
+        type: 'album',
+        name: albumData.name,
+        songList: songs,
+        listInfo: albumData,
+        canRemove: false // 专辑不支持移除歌曲
+      });
+    }
+  } catch (error) {
+    console.error('加载专辑失败:', error);
+    message.error('加载专辑失败');
+  } finally {
+    listLoading.value = false;
+  }
 };
 
 const handlePlay = () => {
@@ -321,13 +447,7 @@ const currentLoginType = computed(() => userStore.loginType);
     .title {
       @apply text-lg font-bold flex items-center justify-between;
       @apply text-gray-900 dark:text-white;
-      .import-btn {
-        @apply bg-light-100 font-normal rounded-lg px-2 py-1 text-opacity-70 text-sm hover:bg-light-200 hover:text-green-500 dark:bg-dark-200 dark:hover:bg-dark-300 dark:hover:text-green-400;
-        @apply cursor-pointer;
-        @apply transition-all duration-200;
-      }
     }
-
     .user-name {
       @apply text-xl font-bold mb-4 flex justify-between;
       @apply text-white text-opacity-70;
@@ -361,7 +481,7 @@ const currentLoginType = computed(() => userStore.loginType);
     .record-list {
       @apply rounded-2xl;
       @apply bg-light dark:bg-black;
-      height: calc(100% - 100px);
+      height: calc(100% - 60px);
 
       .record-item {
         @apply flex items-center px-2 mb-2 rounded-2xl bg-light-100 dark:bg-dark-100;
@@ -393,14 +513,15 @@ const currentLoginType = computed(() => userStore.loginType);
   }
 
   &-item {
-    @apply flex items-center px-2 py-1 rounded-xl cursor-pointer;
+    @apply flex items-center px-2 py-2 rounded-xl cursor-pointer w-full;
     @apply transition-all duration-200;
     @apply hover:bg-light-200 dark:hover:bg-dark-200;
 
     &-img {
-      width: 60px;
-      height: 60px;
-      @apply rounded-xl;
+      @apply flex items-center justify-center rounded-xl text-[40px] w-[60px] h-[60px] bg-light-300 dark:bg-dark-300;
+      .iconfont {
+        @apply text-[40px];
+      }
     }
 
     &-info {
@@ -440,6 +561,13 @@ const currentLoginType = computed(() => userStore.loginType);
 
   .login-container {
     @apply flex justify-center items-center h-full w-full;
+  }
+}
+
+:deep(.n-tabs-rail) {
+  @apply rounded-xl overflow-hidden !important;
+  .n-tabs-capsule {
+    @apply rounded-xl !important;
   }
 }
 </style>
